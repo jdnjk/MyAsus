@@ -16,14 +16,14 @@ enum FnAction: Int, CaseIterable, Identifiable {
          displays, lockScreen, cameraPrivacy, screenshot, settings, nextProfile, balanced, performance, silent
     var id: Int { rawValue }
     var title: String {
-        ["No action", "Mute", "Volume −", "Volume +", "Brightness −", "Brightness +", "Toggle touchpad",
-         "Display settings", "Lock screen", "Camera privacy settings", "Screenshot toolbar", "Open this app's settings",
-         "Next fan preset", "Balanced", "Performance", "Silent"][rawValue]
+        ["无操作", "静音", "音量 −", "音量 +", "亮度 −", "亮度 +", "切换触控板",
+         "显示设置", "锁定屏幕", "相机隐私设置", "截屏工具栏", "打开本应用的设置",
+         "下一个风扇预设", "平衡", "性能", "静音模式"][rawValue]
     }
     static let defaults: [FnAction] = [.mute, .volumeDown, .volumeUp, .brightnessDown, .brightnessUp, .touchpad,
                                        .none, .displays, .lockScreen, .cameraPrivacy, .screenshot, .settings]
-    static let original = ["Mute", "Volume −", "Volume +", "Brightness −", "Brightness +", "Touchpad", "Unassigned",
-                           "Windows projection", "Windows lock", "Camera on/off", "Windows screenshot", "ASUS center"]
+    static let original = ["静音", "音量 −", "音量 +", "亮度 −", "亮度 +", "触控板", "未分配",
+                           "Windows 投影", "Windows 锁屏", "相机开关", "Windows 截屏", "ASUS 中心"]
     static func functionKey(event: UInt32) -> Int? {
         if (0xf101...0xf10c).contains(event) { return Int(event - 0xf100) }
         return [UInt32(0x32): 1, 0x31: 2, 0x30: 3, 0x6b: 6, 0x33: 9, 0x35: 9, 0x85: 10, 0x86: 12][event]
@@ -43,6 +43,10 @@ final class JSONSettings: SettingsStorage {
     private(set) var error: String?
     var isWritable: Bool { error == nil }
     enum Failure: Error { case invalid(String) }
+    private static func errorMessage(_ error: Error) -> String {
+        if let failure = error as? Failure, case let .invalid(message) = failure { return message }
+        return error.localizedDescription
+    }
     static func integer(_ value: Any?) -> Int? {
         guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,
               n.doubleValue.rounded() == n.doubleValue, (-1_000_000...1_000_000).contains(n.doubleValue) else { return nil }
@@ -69,21 +73,21 @@ final class JSONSettings: SettingsStorage {
                     valid = integer(value).flatMap(FnAction.init(rawValue:)) != nil
                 } else { valid = false }
             }
-            if !valid { throw Failure.invalid("Invalid configuration setting: \(key)") }
+            if !valid { throw Failure.invalid("配置项无效：\(key)") }
         }
     }
     init(url: URL, legacy: UserDefaults? = nil) {
         self.url = url
         do {
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               attrs[.type] as? FileAttributeType == .typeSymbolicLink { throw Failure.invalid("Configuration symlinks are not supported") }
+               attrs[.type] as? FileAttributeType == .typeSymbolicLink { throw Failure.invalid("不支持将配置文件设为符号链接") }
             if FileManager.default.fileExists(atPath: url.path) {
                 let data = try Data(contentsOf: url)
                 guard data.count <= 262144,
                       let document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       Set(document.keys) == Set(["schemaVersion", "settings"]),
                       Self.integer(document["schemaVersion"]) == 1,
-                      let settings = document["settings"] as? [String: Any] else { throw Failure.invalid("Invalid config.json schema") }
+                      let settings = document["settings"] as? [String: Any] else { throw Failure.invalid("config.json 的结构无效") }
                 try Self.validate(settings)
                 values = Self.defaultValues().merging(settings) { _, explicit in explicit }
             } else {
@@ -106,7 +110,7 @@ final class JSONSettings: SettingsStorage {
                 }
                 try persist(values)
             }
-        } catch { self.error = "Configuration not loaded; hardware writes disabled. \(error). File preserved: \(url.path)" }
+        } catch { self.error = "配置未加载，已禁用硬件写入。\(Self.errorMessage(error))。文件已保留：\(url.path)" }
     }
     private func persist(_ candidate: [String: Any]) throws {
         try Self.validate(candidate)
@@ -123,7 +127,7 @@ final class JSONSettings: SettingsStorage {
         guard isWritable else { return }
         var candidate = values
         if let value { candidate[key] = value } else { candidate.removeValue(forKey: key) }
-        do { try persist(candidate); values = candidate } catch { self.error = "Configuration save failed; controls disabled: \(error)" }
+        do { try persist(candidate); values = candidate } catch { self.error = "配置保存失败，已禁用控制：\(Self.errorMessage(error))" }
     }
     func removeObject(forKey key: String) {
         guard values[key] != nil else { return }

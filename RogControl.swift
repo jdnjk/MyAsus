@@ -60,20 +60,20 @@ struct AsusState {
     var writable: Bool { present && abiVersion == 5 }
     func supports(_ cap: AsusCaps) -> Bool { writable && caps.contains(cap) }
     func reports(_ cap: AsusCaps) -> Bool { present && (abiVersion < 4 || caps.contains(cap)) }
-    var machineName: String { "ASUS notebook" }
-    var powerLabel: String { !present ? "Disconnected" : !powerKnown ? "Power unknown" : ac ? "AC" : "Battery" }
+    var machineName: String { "ASUS 笔记本电脑" }
+    var powerLabel: String { !present ? "未连接" : !powerKnown ? "电源状态未知" : ac ? "交流电" : "电池" }
     var selectedMode: Mode? { Mode.from(profile: abiVersion >= 5 ? desiredProfile : profile) }
-    var actualLabel: String { Mode.from(profile: profile)?.title ?? "Unknown" }
+    var actualLabel: String { Mode.from(profile: profile)?.title ?? "未知" }
     var profileStatus: String {
-        var text = "Desired: \(selectedMode?.title ?? "Unknown") · Actual: \(actualLabel)."
+        var text = "期望模式：\(selectedMode?.title ?? "未知") · 实际模式：\(actualLabel)。"
         if lowPowerOverrideActive {
-            text += " Low Power Mode override: \(Mode.from(profile: effectiveProfile)?.title ?? "Unknown"); ordinary desired is retained."
+            text += " 低电量模式预设已启用：\(Mode.from(profile: effectiveProfile)?.title ?? "未知")；保留原有期望模式。"
         }
         if abiVersion >= 5 && lastProfileError != 0 {
-            text += String(format: " Profile reconciliation failed (0x%08X); target not confirmed.", lastProfileError)
+            text += String(format: " 模式协调失败（0x%08X）；目标尚未确认。", lastProfileError)
         } else if effectiveProfile == 1 && (!powerKnown || !ac || profileDeferred) {
-            text += profile == 0 ? " Temporarily running Balanced; Performance restores automatically on AC." :
-                " Performance deferred; Balanced is requested but not confirmed. Performance restores automatically on AC."
+            text += profile == 0 ? " 暂时运行平衡模式；接通交流电后自动恢复性能模式。" :
+                " 性能模式已延后；已请求平衡模式但尚未确认。接通交流电后自动恢复性能模式。"
         }
         return text
     }
@@ -117,7 +117,13 @@ struct AsusState {
 enum Mode: String, CaseIterable, Identifiable {
     case balanced, performance, silent
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .balanced: return "平衡"
+        case .performance: return "性能"
+        case .silent: return "静音"
+        }
+    }
     var symbol: String {
         self == .silent ? "leaf" : self == .performance ? "flame" : "gauge.with.dots.needle.50percent"
     }
@@ -279,19 +285,19 @@ struct PerformanceDropPolicy {
         // Compare counters, not AC snapshots: even a quick unplug/replug must be observed.
         let detail: String
         if state.lastProfileError != 0 {
-            detail = String(format: "Balanced was requested, but the hardware change was not confirmed (0x%08X). Actual: %@. The driver will retry the current effective preset.", state.lastProfileError, state.actualLabel)
+            detail = String(format: "已请求平衡模式，但硬件变更未确认（0x%08X）。实际模式：%@。驱动将重试当前生效的预设。", state.lastProfileError, state.actualLabel)
         } else if state.effectiveProfile != 1 {
-            detail = "The effective preset has since changed to \(Mode.from(profile: state.effectiveProfile)?.title ?? "Unknown"). Actual: \(state.actualLabel)."
+            detail = "生效预设已变为\(Mode.from(profile: state.effectiveProfile)?.title ?? "未知")。实际模式：\(state.actualLabel)。"
         } else if state.powerKnown && state.ac && state.profile == 1 {
-            detail = "Performance has already been restored on AC after the temporary Balanced request."
+            detail = "临时请求平衡模式后，性能模式已在接通交流电后恢复。"
         } else if state.profile == 0 {
-            detail = "Temporarily running Balanced. Performance restores automatically when AC power returns."
+            detail = "暂时运行平衡模式。接通交流电后自动恢复性能模式。"
         } else {
-            detail = "Balanced was requested, but the actual mode is not confirmed. Performance restores automatically when AC power returns."
+            detail = "已请求平衡模式，但实际模式尚未确认。接通交流电后自动恢复性能模式。"
         }
-        let context = state.lowPowerOverrideActive ? " Low Power Mode preset is active; ordinary desired is retained." : ""
+        let context = state.lowPowerOverrideActive ? " 低电量模式预设已启用；保留原有期望模式。" : ""
         return PerformanceDropNotice(sequence: state.performanceDropSequence,
-                                     body: "AC power was disconnected while the effective preset was Performance. " + detail + context)
+                                     body: "生效预设为性能模式时交流电已断开。" + detail + context)
     }
 }
 
@@ -315,7 +321,9 @@ enum Asus {
         case ready
         case notInstalled                     // no AsusSMC service in the IORegistry
         case loadedReadOnly(abi: UInt32)      // service present, AsusControl-ABI < 5
-        case loadedNoControls                 // service present but the required control interface is unavailable
+        case loadedNoControls                 // service present but ABI property is unavailable
+        case openFailed(code: kern_return_t)
+        case stateFailed(code: kern_return_t)
     }
     static func diagnose() -> DriverStatus {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AsusSMC"))
@@ -324,11 +332,15 @@ enum Asus {
         var propsUnmanaged: Unmanaged<CFMutableDictionary>?
         guard IORegistryEntryCreateCFProperties(svc, &propsUnmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS,
               let props = propsUnmanaged?.takeRetainedValue() as? [String: Any] else { return .notInstalled }
-        if let abi = (props["AsusControl-ABI"] as? NSNumber)?.uint32Value, abi < 5 { return .loadedReadOnly(abi: abi) }
+        guard let abi = (props["AsusControl-ABI"] as? NSNumber)?.uint32Value else { return .loadedNoControls }
+        if abi < 5 { return .loadedReadOnly(abi: abi) }
         var conn: io_connect_t = 0
-        let opened = IOServiceOpen(svc, mach_task_self_, 0, &conn) == KERN_SUCCESS
-        if opened { IOServiceClose(conn) }
-        return opened ? .ready : .loadedNoControls
+        let result = IOServiceOpen(svc, mach_task_self_, 0, &conn)
+        guard result == KERN_SUCCESS else { return .openFailed(code: result) }
+        IOServiceClose(conn)
+        let (status, _) = call(.state, outCount: 36 * 4)
+        // diagnose() is used only after state() failed. A successful open alone is not readiness.
+        return .stateFailed(code: status)
     }
 
     static func call(_ sel: Sel, scalars: [UInt64] = [], input: [UInt8]? = nil, outCount: Int = 0) -> (kern_return_t, [UInt8]) {
@@ -443,7 +455,7 @@ final class RogModel: ObservableObject {
     @Published var st = AsusState()
     @Published var tctl: Double?
     @Published var gpuTemperature: Double?
-    @Published var temperatureSources = "No temperature sample yet"
+    @Published var temperatureSources = "尚无温度采样"
     @Published var watts: Double?
     @Published var message = ""
     @Published var selectedPage: RogPage = .overview
@@ -459,33 +471,37 @@ final class RogModel: ObservableObject {
     @Published var chargeError = ""
     @Published var fnLockError = ""
     @Published var notificationsEnabled = JSONSettings.shared.bool(forKey: "performance.notifications")
-    @Published var notificationStatus = "Checking notification permission…"
+    @Published var notificationStatus = "正在检查通知权限…"
     @Published var driverStatus: Asus.DriverStatus = .notInstalled
     var activeMode: Mode? { st.present ? Mode.from(profile: st.profile) : nil }
     var selectedMode: Mode? { st.present ? st.selectedMode : nil }
-    var modeLabel: String { activeMode?.title ?? "Unknown" }
+    var modeLabel: String { activeMode?.title ?? "未知" }
     var driverNotice: String {
-        st.present && !st.writable ? "AsusSMC ABI \(st.abiVersion): read-only. ABI 5 is required for controls." : ""
+        st.present && !st.writable ? "AsusSMC ABI \(st.abiVersion)：只读。控制功能需要 ABI 5。" : ""
     }
     // Concrete reason + remediation for the menu bar / banners. Empty when ready.
     var driverStatusNotice: String {
         switch driverStatus {
         case .ready: return ""
         case .notInstalled:
-            return "AsusSMC is not installed or not loaded. Install a compatible AsusSMC.kext through OpenCore with Lilu + VirtualSMC, then reboot."
+            return "AsusSMC 未安装或未加载。请通过 OpenCore 安装兼容的 AsusSMC.kext、Lilu 和 VirtualSMC，然后重新启动。"
         case .loadedReadOnly(let abi):
-            return "AsusSMC ABI \(abi) is loaded but read-only. ABI 5 is required for controls; install a compatible AsusSMC build."
+            return "已加载 AsusSMC ABI \(abi)，但仅支持只读。控制功能需要 ABI 5；请安装兼容的 AsusSMC 版本。"
         case .loadedNoControls:
-            return "AsusSMC is loaded but the required ABI 5 control interface is unavailable. Install a compatible AsusSMC build and reboot."
+            return "已找到 AsusSMC 服务，但缺少 AsusControl-ABI。请检查是否加载了支持控制功能的兼容驱动。"
+        case .openFailed(let code):
+            return String(format: "已找到 AsusSMC 服务，但控制连接失败（0x%08X）。请检查驱动版本和用户客户端访问权限。", UInt32(bitPattern: code))
+        case .stateFailed(let code):
+            return String(format: "AsusSMC 连接已打开，但读取状态失败或返回无效响应（0x%08X）。请检查驱动 ABI 和访问权限。", UInt32(bitPattern: code))
         }
     }
     var driverStatusSymbol: String {
         driverStatus == .ready ? (activeMode ?? .balanced).symbol : "exclamationmark.triangle.fill"
     }
     var fnLockLabel: String {
-        st.fnLockLastRequest.map { $0 == 0 ? "Unlocked · direct shortcuts" : "Locked · F1–F12" } ?? "Unknown"
+        st.fnLockLastRequest.map { $0 == 0 ? "未锁定 · 直接使用快捷功能" : "已锁定 · F1–F12" } ?? "未知"
     }
-    var eventLabel: String { String(format: "lastKey 0x%08X · sequence %u", st.lastKey, st.eventSequence) }
+    var eventLabel: String { String(format: "最近按键 0x%08X · 序列号 %u", st.lastKey, st.eventSequence) }
     var onChange: (() -> Void)?
     @Published var lowPowerRule = LowPowerRule.load()
     @Published var lowPowerError = ""
@@ -500,7 +516,8 @@ final class RogModel: ObservableObject {
     init() {
         if JSONSettings.shared.isWritable {
             let wanted = JSONSettings.shared.bool(forKey: "openAtLogin")
-            if LoginItem.enabled != wanted { LoginItem.set(wanted) }
+            // Refresh the executable path after an app rename or move.
+            if wanted || LoginItem.enabled { LoginItem.set(wanted) }
             loginEnabled = LoginItem.enabled
         }
         UNUserNotificationCenter.current().delegate = notificationDelegate
@@ -558,8 +575,8 @@ final class RogModel: ObservableObject {
         readState()
         let sensors = NativeSMCTelemetry.sample()
         tctl = sensors.cpu; gpuTemperature = sensors.gpu; watts = nil
-        temperatureSources = "CPU: \(sensors.cpuSource). GPU: \(sensors.gpuSource). Fan RPM: ASUS TACH/WMI."
-        if !st.reports(.gpuFan) { temperatureSources += " No separate GPU fan telemetry is available." }
+        temperatureSources = "CPU: \(sensors.cpuSource). GPU: \(sensors.gpuSource). 风扇转速：ASUS TACH/WMI。"
+        if !st.reports(.gpuFan) { temperatureSources += " 无单独的 GPU 风扇遥测数据。" }
         // Recover a missed system notification without replaying ordinary desired.
         if macOSLowPowerActive != ProcessInfo.processInfo.isLowPowerModeEnabled { syncLowPowerRule() }
         onChange?()
@@ -572,12 +589,12 @@ final class RogModel: ObservableObject {
 
     func applyAll(reason: RestoreReason) {
         readState()
-        guard st.present else { message = driverStatusNotice.isEmpty ? "AsusSMC is not loaded" : driverStatusNotice; return }
+        guard st.present else { message = driverStatusNotice.isEmpty ? "AsusSMC 未加载" : driverStatusNotice; return }
         macOSLowPowerActive = ProcessInfo.processInfo.isLowPowerModeEnabled
         let requests = driverEvents.restore(state: st, reason: reason, lowPowerActive: macOSLowPowerActive)
         profileError = ""; chargeError = ""; fnLockError = ""; lowPowerError = ""
         for request in requests {
-            let error = Asus.set(request) == KERN_SUCCESS ? "" : "Saved \(request.what) request was refused."
+            let error = Asus.set(request) == KERN_SUCCESS ? "" : "已保存的 \(request.what) 请求被拒绝。"
             switch request.what {
             case .profile: profileError = error
             case .charge: chargeError = error
@@ -589,35 +606,35 @@ final class RogModel: ObservableObject {
         readState() // Profile SET success acknowledges intent, NOT hardware reconciliation.
         let errors = [profileError, chargeError, fnLockError, lowPowerError].filter { !$0.isEmpty }
         message = !st.writable ? driverNotice : !errors.isEmpty ? errors.joined(separator: "; ") :
-            requests.isEmpty ? "No supported saved settings to restore." : "Saved requests accepted. " + st.profileStatus
+            requests.isEmpty ? "没有可恢复的受支持已保存设置。" : "已保存的请求已接受。" + st.profileStatus
         onChange?()
     }
 
     func choose(_ mode: Mode) {
         readState()
         guard ControlPolicy.canChoose(mode, state: st) else {
-            profileError = "Profile unavailable; ABI 5 profile support is required."
+            profileError = "模式不可用；需要 ABI 5 模式支持。"
             return
         }
-        profileError = Asus.set(ControlRequest(what: .profile, value: mode.firmwareProfile)) == KERN_SUCCESS ? "" : "Profile intent was refused."
+        profileError = Asus.set(ControlRequest(what: .profile, value: mode.firmwareProfile)) == KERN_SUCCESS ? "" : "模式请求被拒绝。"
         if profileError.isEmpty { DesiredSettings.save(mode) }
         readState()
-        message = profileError.isEmpty ? "\(mode.title) desired intent accepted. " + st.profileStatus : profileError
+        message = profileError.isEmpty ? "已接受\(mode.title)模式请求。" + st.profileStatus : profileError
         onChange?()
     }
     func setCharge(_ value: Int) {
         // Unknown readback is not evidence that a supported write is unavailable.
         let request = ControlRequest(what: .charge, value: value)
-        chargeError = Asus.set(request) == KERN_SUCCESS ? "" : "Charge limit unavailable or refused."
+        chargeError = Asus.set(request) == KERN_SUCCESS ? "" : "充电上限不可用或请求被拒绝。"
         if chargeError.isEmpty { JSONSettings.shared.set(value, forKey: "charge") }
-        message = chargeError.isEmpty ? "Charge limit requested: \(value)%" : chargeError
+        message = chargeError.isEmpty ? "已请求充电上限：\(value)%" : chargeError
         readState()
         onChange?()
     }
     func setFnLock(_ value: Int) {
-        fnLockError = Asus.set(ControlRequest(what: .fnLock, value: value)) == KERN_SUCCESS ? "" : "FnLock unavailable or refused."
+        fnLockError = Asus.set(ControlRequest(what: .fnLock, value: value)) == KERN_SUCCESS ? "" : "FnLock 不可用或请求被拒绝。"
         if fnLockError.isEmpty { JSONSettings.shared.set(value, forKey: "fnlock") }
-        message = fnLockError.isEmpty ? "FnLock requested: \(value == 1 ? "On" : "Off") (not hardware readback)" : fnLockError
+        message = fnLockError.isEmpty ? "已请求 FnLock：\(value == 1 ? "开启" : "关闭")（非硬件回读）" : fnLockError
         readState()
         onChange?()
     }
@@ -630,7 +647,7 @@ final class RogModel: ObservableObject {
     func syncLowPowerRule() {
         macOSLowPowerActive = ProcessInfo.processInfo.isLowPowerModeEnabled
         let request = ControlRequest(what: .lowPowerConfig, value: lowPowerRule.packed(active: macOSLowPowerActive))
-        lowPowerError = Asus.set(request) == KERN_SUCCESS ? "" : "Low Power Mode rule unavailable or refused (ABI 5 profile support required)."
+        lowPowerError = Asus.set(request) == KERN_SUCCESS ? "" : "低电量模式规则不可用或请求被拒绝（需要 ABI 5 模式支持）。"
         readState()
         onChange?()
     }
@@ -644,7 +661,7 @@ final class RogModel: ObservableObject {
         if enabled {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] _, error in
                 Task { @MainActor [weak self] in
-                    if let error { self?.notificationStatus = "Notification permission error: \(error.localizedDescription)" }
+                    if let error { self?.notificationStatus = "通知权限错误：\(error.localizedDescription)" }
                     else { self?.updateNotificationPermission() }
                 }
             }
@@ -654,32 +671,32 @@ final class RogModel: ObservableObject {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             let status: String
             switch settings.authorizationStatus {
-            case .denied: status = "Notifications denied. Enable ROG Control in System Settings → Notifications; profile controls still work."
-            case .notDetermined: status = "Permission not requested. Turn on notifications to request access."
-            case .authorized, .provisional: status = "Notification permission granted."
-            @unknown default: status = "Notification permission unknown."
+            case .denied: status = "通知权限被拒绝。请在“系统设置”→“通知”中启用 MyASUS；模式控制仍可使用。"
+            case .notDetermined: status = "尚未请求权限。请开启通知以请求访问权限。"
+            case .authorized, .provisional: status = "已获得通知权限。"
+            @unknown default: status = "通知权限状态未知。"
             }
             Task { @MainActor [weak self] in self?.notificationStatus = status }
         }
     }
     private func deliver(_ notice: PerformanceDropNotice) {
         let content = UNMutableNotificationContent()
-        content.title = "Performance on battery"
+        content.title = "电池供电时的性能模式"
         content.body = notice.body
         content.sound = .default
         // UUID also avoids replacing a prior notification after a full counter wrap.
         let request = UNNotificationRequest(identifier: "performance-drop-\(notice.sequence)-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { [weak self] error in
             guard let error else { return }
-            Task { @MainActor [weak self] in self?.notificationStatus = "Notification delivery failed: \(error.localizedDescription)" }
+            Task { @MainActor [weak self] in self?.notificationStatus = "通知发送失败：\(error.localizedDescription)" }
         }
     }
     var batteryLine: String {
-        guard st.batDesign > 5 else { return "battery data not available from the firmware" }
+        guard st.batDesign > 5 else { return "固件未提供电池数据" }
         var s = ""
-        if st.batFull > 0 { s += String(format: "health %.0f %% (%d / %d mAh)", 100.0 * Double(st.batFull) / Double(st.batDesign), st.batFull, st.batDesign) }
+        if st.batFull > 0 { s += String(format: "健康度 %.0f %%（%d / %d mAh）", 100.0 * Double(st.batFull) / Double(st.batDesign), st.batFull, st.batDesign) }
         if st.batFull > 0, st.batNow > 0 { s += String(format: " · %.0f %%", 100.0 * Double(st.batNow) / Double(st.batFull)) }
-        if st.batState & 2 != 0 { s += " · charging \(st.batRate) mA" } else if st.batState & 1 != 0 { s += " · \(st.batRate) mA" }
+        if st.batState & 2 != 0 { s += " · 正在充电 \(st.batRate) mA" } else if st.batState & 1 != 0 { s += " · \(st.batRate) mA" }
         return s
     }
     func setLogin(_ on: Bool) {
@@ -693,12 +710,12 @@ final class RogModel: ObservableObject {
     func applyBindings() {
         guard JSONSettings.shared.isWritable else { return }
         for key in 1...12 where canBind(key) {
-            if Asus.bind(key: key, action: bindings[key - 1]) != KERN_SUCCESS { bindingsError = "F\(key) binding was refused." }
+            if Asus.bind(key: key, action: bindings[key - 1]) != KERN_SUCCESS { bindingsError = "F\(key) 绑定请求被拒绝。" }
         }
     }
     func setBinding(_ key: Int, _ action: FnAction) {
         guard canBind(key) else { return }
-        guard Asus.bind(key: key, action: action) == KERN_SUCCESS else { bindingsError = "F\(key) binding was refused."; return }
+        guard Asus.bind(key: key, action: action) == KERN_SUCCESS else { bindingsError = "F\(key) 绑定请求被拒绝。"; return }
         bindings[key - 1] = action
         JSONSettings.shared.set(action.rawValue, forKey: "key.F\(key)")
         bindingsError = ""
@@ -713,7 +730,7 @@ final class RogModel: ObservableObject {
     }
     func setFnPolarity(_ inverted: Bool) {
         let value = inverted ? 0 : 1
-        fnLockError = Asus.set(ControlRequest(what: .fnHotkeysValue, value: value)) == KERN_SUCCESS ? "" : "Firmware Fn polarity request failed."
+        fnLockError = Asus.set(ControlRequest(what: .fnHotkeysValue, value: value)) == KERN_SUCCESS ? "" : "固件 Fn 极性设置请求失败。"
         if fnLockError.isEmpty { JSONSettings.shared.set(value, forKey: "fn.hotkeysFirmwareValue") }
         readState()
     }
@@ -727,17 +744,17 @@ final class RogModel: ObservableObject {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") { NSWorkspace.shared.open(url) }
         case .cameraPrivacy:
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") { NSWorkspace.shared.open(url) }
-            message = "Camera privacy settings opened. A global hardware camera on/off toggle is not implemented or verified."
+            message = "已打开相机隐私设置。尚未实现或验证全局硬件相机开关。"
         case .lockScreen, .screenshot:
             let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             guard AXIsProcessTrustedWithOptions(options) else {
-                message = "This key action needs Accessibility permission for ROG Control; no keystroke was sent."
+                message = "此按键操作需要 MyASUS 的辅助功能权限；未发送按键。"
                 NSSound.beep(); return
             }
             let code: CGKeyCode = action == .lockScreen ? 0x0c : 0x17 // Control+Command+Q / Shift+Command+5
             let flags: CGEventFlags = action == .lockScreen ? [.maskControl, .maskCommand] : [.maskShift, .maskCommand]
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else { message = "Could not create shortcut events."; return }
+                  let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else { message = "无法创建快捷键事件。"; return }
             down.flags = flags; up.flags = flags
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         default: break // Native sound/brightness/touchpad/preset actions belong only to AsusSMC.
@@ -795,21 +812,21 @@ struct CurveChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Fan duty (%)").font(.caption).foregroundStyle(.secondary)
+                Text("风扇占空比（%）").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if let point = data.points.first(where: { $0.id == hovered }) {
                     Text("\(point.temperature)°C · \(point.duty)%").font(.caption).monospacedDigit()
                 }
             }.frame(height: 16)
             if data.points.isEmpty {
-                Text("No valid fan curve data.").font(.callout).foregroundStyle(.secondary).frame(height: 100)
+                Text("没有有效的风扇曲线数据。").font(.callout).foregroundStyle(.secondary).frame(height: 100)
             } else {
                 Chart(data.points) { point in
-                    LineMark(x: .value("Temperature", point.temperature), y: .value("Fan duty", point.duty),
-                             series: .value("Segment", point.segment))
+                    LineMark(x: .value("温度", point.temperature), y: .value("风扇占空比", point.duty),
+                             series: .value("区段", point.segment))
                         .interpolationMethod(.linear).lineStyle(StrokeStyle(lineWidth: 2))
                         .foregroundStyle(Color.accentColor)
-                    PointMark(x: .value("Temperature", point.temperature), y: .value("Fan duty", point.duty))
+                    PointMark(x: .value("温度", point.temperature), y: .value("风扇占空比", point.duty))
                         .symbolSize(point.id == hovered ? 70 : 24).foregroundStyle(Color.accentColor)
                 }
                 .chartXScale(domain: 20...105).chartYScale(domain: 0...100)
@@ -843,16 +860,16 @@ struct CurveChart: View {
                     }
                 }
                 .frame(height: compact ? 130 : 220)
-                Text("Temperature (°C)").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                Text("温度（°C）").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
             }
             if data.omitted > 0 {
-                Text("\(data.omitted) firmware point(s) outside the valid range or order are not plotted.")
+                Text("有 \(data.omitted) 个固件数据点超出有效范围或顺序，未绘制。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Fan duty by temperature")
-        .accessibilityValue(data.points.map { "\($0.temperature) degrees Celsius, \($0.duty) percent" }.joined(separator: "; "))
+        .accessibilityLabel("风扇占空比与温度")
+        .accessibilityValue(data.points.map { "\($0.temperature) 摄氏度，\($0.duty) 百分比" }.joined(separator: "; "))
     }
     private func distance(_ point: FanCurvePoint, to position: CGPoint, proxy: ChartProxy) -> CGFloat {
         guard let x = proxy.position(forX: point.temperature), let y = proxy.position(forY: point.duty) else { return .infinity }
@@ -867,15 +884,15 @@ struct FanCurveView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("\(m.curveMode.title) firmware curve").font(.system(size: 12, weight: .medium))
+                Text("\(m.curveMode.title)模式固件曲线").font(.system(size: 12, weight: .medium))
                 Spacer()
-                Picker("Fan", selection: $fan) { Text("CPU").tag(0); Text("GPU").tag(1) }
+                Picker("风扇", selection: $fan) { Text("CPU").tag(0); Text("GPU").tag(1) }
                     .pickerStyle(.segmented).frame(width: 105).controlSize(.small)
             }
             if let bytes = fan == 0 ? m.curve : m.gpuCurve { CurveChart(c: bytes, compact: compact) }
-            else { Text("Fan curve unavailable from firmware.").font(.caption).foregroundStyle(.secondary) }
+            else { Text("固件未提供风扇曲线。").font(.caption).foregroundStyle(.secondary) }
             if !compact {
-                Text("Firmware reference, not live RPM. Hover a point to read its temperature and duty.")
+                Text("固件参考数据，并非实时转速。将指针悬停在数据点上可查看温度和占空比。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -885,6 +902,14 @@ struct FanCurveView: View {
 enum RogPage: String, CaseIterable, Identifiable {
     case overview = "Overview", performance = "Performance", battery = "Battery & Display", settings = "Settings"
     var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .overview: return "概览"
+        case .performance: return "性能"
+        case .battery: return "电池与显示"
+        case .settings: return "设置"
+        }
+    }
     var symbol: String {
         switch self {
         case .overview: return "square.grid.2x2"
@@ -921,55 +946,55 @@ struct RogControls: View {
             }
             if !m.configurationError.isEmpty { Label(m.configurationError, systemImage: "exclamationmark.triangle").textSelection(.enabled) }
             if page == .overview {
-                RogSection(title: "Live telemetry") {
+                RogSection(title: "实时遥测") {
                     HStack(spacing: 16) {
-                        Stat(symbol: "thermometer.medium", value: m.tctl.map { String(format: "%.1f°C", $0) } ?? "Unavailable", label: "CPU temperature")
-                        Stat(symbol: "thermometer.medium", value: m.gpuTemperature.map { String(format: "%.1f°C", $0) } ?? "Unavailable", label: "GPU temperature")
-                        Stat(symbol: "fan", value: m.st.reports(.cpuFan) ? "\(m.st.cpuFan)" : "Unavailable", label: m.st.reports(.gpuFan) ? "CPU fan · RPM" : "System fan · RPM")
-                        Stat(symbol: "fan", value: m.st.reports(.gpuFan) ? "\(m.st.gpuFan)" : "Unavailable", label: "GPU fan · RPM")
+                        Stat(symbol: "thermometer.medium", value: m.tctl.map { String(format: "%.1f°C", $0) } ?? "不可用", label: "CPU 温度")
+                        Stat(symbol: "thermometer.medium", value: m.gpuTemperature.map { String(format: "%.1f°C", $0) } ?? "不可用", label: "GPU 温度")
+                        Stat(symbol: "fan", value: m.st.reports(.cpuFan) ? "\(m.st.cpuFan)" : "不可用", label: m.st.reports(.gpuFan) ? "CPU 风扇 · RPM" : "系统风扇 · RPM")
+                        Stat(symbol: "fan", value: m.st.reports(.gpuFan) ? "\(m.st.gpuFan)" : "不可用", label: "GPU 风扇 · RPM")
                     }
                     Text(m.temperatureSources).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
             if page == .overview || page == .performance {
-                RogSection(title: "Performance mode") { modes }
+                RogSection(title: "性能模式") { modes }
             }
             if page == .overview || page == .settings {
                 RogSection(title: "FnLock") { fnLockControls }
             }
             if page == .overview || page == .battery {
-                RogSection(title: "Battery care") {
+                RogSection(title: "电池保养") {
                     VStack(alignment: .leading, spacing: 12) {
                         batteryControls
-                        Text("60% for desk use · 80% for everyday use · 100% for travel").font(.callout).foregroundStyle(.secondary)
+                        Text("桌面使用 60% · 日常使用 80% · 旅行使用 100%").font(.callout).foregroundStyle(.secondary)
                     }.disabled(!m.st.present)
                 }
             }
             if page == .overview {
-                RogSection(title: "Graphics") { Text(gpuLine).font(.callout).foregroundStyle(.secondary) }
+                RogSection(title: "显卡") { Text(gpuLine).font(.callout).foregroundStyle(.secondary) }
             }
             if page == .settings {
-                RogSection(title: "Startup") {
-                    Toggle("Open at Login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) })).toggleStyle(.switch)
-                    Text("Runs quietly in the menu bar at login. Closing the window keeps hardware control active.").font(.callout).foregroundStyle(.secondary)
+                RogSection(title: "启动") {
+                    Toggle("登录时打开", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) })).toggleStyle(.switch)
+                    Text("登录后在菜单栏静默运行。关闭窗口后硬件控制仍保持运行。").font(.callout).foregroundStyle(.secondary)
                 }
-                RogSection(title: "Configuration file") {
+                RogSection(title: "配置文件") {
                     Text(JSONSettings.shared.url.path).font(.caption).textSelection(.enabled)
-                    Text("Loaded at login. Fn Lock defaults to unlocked/direct shortcuts. Changes are saved atomically; malformed files are preserved and make controls read-only. Restart after editing the file externally.").font(.caption).foregroundStyle(.secondary)
-                    Button("Show configuration in Finder") { NSWorkspace.shared.selectFile(JSONSettings.shared.url.path, inFileViewerRootedAtPath: "") }
+                    Text("登录时加载。FnLock 默认为未锁定，即直接使用快捷功能。更改以原子方式保存；格式错误的文件会被保留，控制功能将变为只读。外部编辑文件后请重新启动。").font(.caption).foregroundStyle(.secondary)
+                    Button("在 Finder 中显示配置文件") { NSWorkspace.shared.selectFile(JSONSettings.shared.url.path, inFileViewerRootedAtPath: "") }
                 }
-                RogSection(title: "F1–F12 bindings") { keyBindingControls }
-                RogSection(title: "Low Power Mode preset") { lowPowerControls }
-                RogSection(title: "Performance notifications") {
-                    Toggle("Notify when Performance loses AC power", isOn: Binding(get: { m.notificationsEnabled }, set: { m.setNotifications($0) }))
+                RogSection(title: "F1–F12 按键绑定") { keyBindingControls }
+                RogSection(title: "低电量模式预设") { lowPowerControls }
+                RogSection(title: "性能模式通知") {
+                    Toggle("性能模式下断开交流电时通知", isOn: Binding(get: { m.notificationsEnabled }, set: { m.setNotifications($0) }))
                     Text(m.notificationStatus).font(.callout).foregroundStyle(.secondary)
-                    Button("Refresh permission status") { m.updateNotificationPermission() }
+                    Button("刷新权限状态") { m.updateNotificationPermission() }
                 }
-                RogSection(title: "About ROG Control") {
+                RogSection(title: "关于 MyASUS") {
                     Text(m.st.machineName).font(.headline)
-                    Text("Only explicitly saved desired, charge and FnLock settings are restored at startup and on wake. AsusSMC temporarily falls back from Performance to Balanced on battery or unknown power, then restores Performance on AC. Low Power Mode can temporarily override the preset without replacing ordinary desired.").foregroundStyle(.secondary)
-                    Link("Created by thanhnndev · github.com/thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!)
-                    Link("Inspired by asusctl and the asus-linux community", destination: URL(string: "https://asus-linux.org")!)
+                    Text("启动和唤醒时只恢复明确保存的期望模式、充电上限和 FnLock 设置。使用电池或电源状态未知时，AsusSMC 会暂时从性能模式回退到平衡模式，接通交流电后恢复性能模式。低电量模式可临时覆盖预设，不会替换原有期望模式。").foregroundStyle(.secondary)
+                    Link("由 thanhnndev 创建 · github.com/thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!)
+                    Link("灵感来自 asusctl 和 asus-linux 社区", destination: URL(string: "https://asus-linux.org")!)
                 }
             }
             if !m.message.isEmpty {
@@ -981,14 +1006,14 @@ struct RogControls: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text("FnLock").font(.system(size: 12))
-                ChoiceButton(title: "Unlocked · shortcuts", selected: m.st.fnLockLastRequest == 0) { m.setFnLock(0) }
-                ChoiceButton(title: "Locked · F1–F12", selected: m.st.fnLockLastRequest == 1) { m.setFnLock(1) }
+                ChoiceButton(title: "未锁定 · 快捷功能"，已选择: m.st.fnLockLastRequest == 0) { m.setFnLock(0) }
+                ChoiceButton(title: "已锁定 · F1–F12"，已选择: m.st.fnLockLastRequest == 1) { m.setFnLock(1) }
                 Spacer()
             }.disabled(!m.st.supports(.fnLock))
-            Text("Last request: \(m.fnLockLabel) — not hardware readback.").font(.caption).foregroundStyle(.secondary)
-            Text("Default: unlocked, F1–F12 directly perform shortcuts. Fn+Esc always toggles, independent of the lock state.").font(.caption).foregroundStyle(.secondary)
-            Toggle("Invert firmware Fn mode (calibration only)", isOn: Binding(get: { m.st.hotkeysFirmwareValue == 0 }, set: { m.setFnPolarity($0) })).disabled(!m.st.supports(.fnLock))
-            Text("Firmware polarity must be verified on this BIOS. If the physical behavior is reversed, use the calibration option; the configuration keeps the logical unlocked/locked meaning.").font(.caption).foregroundStyle(.secondary)
+            Text("上次请求：\(m.fnLockLabel) — 非硬件回读。").font(.caption).foregroundStyle(.secondary)
+            Text("默认未锁定，F1–F12 直接执行快捷功能。Fn+Esc 始终用于切换，与锁定状态无关。").font(.caption).foregroundStyle(.secondary)
+            Toggle("反转固件 Fn 模式（仅用于校准）", isOn: Binding(get: { m.st.hotkeysFirmwareValue == 0 }, set: { m.setFnPolarity($0) })).disabled(!m.st.supports(.fnLock))
+            Text("必须在此 BIOS 上验证固件极性。如果实际行为相反，请使用校准选项；配置仍保留逻辑上的未锁定／锁定含义。").font(.caption).foregroundStyle(.secondary)
             if m.st.supports(.hotkeys) { Text(m.eventLabel).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             if !m.fnLockError.isEmpty { Text(m.fnLockError).font(.caption).foregroundStyle(.secondary) }
         }
@@ -999,15 +1024,15 @@ struct RogControls: View {
                 HStack {
                     Text("F\(key)").frame(width: 35, alignment: .leading)
                     Text(FnAction.original[key - 1]).font(.caption).foregroundStyle(.secondary).frame(width: 145, alignment: .leading)
-                    Picker("F\(key) action", selection: Binding(get: { m.bindings[key - 1] }, set: { m.setBinding(key, $0) })) {
+                    Picker("F\(key) 操作", selection: Binding(get: { m.bindings[key - 1] }, set: { m.setBinding(key, $0) })) {
                         ForEach(FnAction.allCases) { action in Text(action.title).tag(action) }
                     }.labelsHidden().disabled(!m.canBind(key))
-                    if !m.canBind(key) { Text("Needs bridge / capture").font(.caption).foregroundStyle(.secondary) }
+                    if !m.canBind(key) { Text("需要桥接／捕获").font(.caption).foregroundStyle(.secondary) }
                 }
             }
-            Button("Restore default bindings") { m.resetBindings() }
-            Text("F12 opens this settings panel. Fn+Esc is reserved. F7 has no known event; F11 needs macOS key capture before remapping can be verified. The optional EC query bridge enables other firmware-routed keys without duplicate PS/2 actions.").font(.caption).foregroundStyle(.secondary)
-            Text("F10 currently opens camera privacy settings, not a verified global hardware camera switch. Lock/screenshot shortcuts require Accessibility permission. App actions need the app running in the background.").font(.caption).foregroundStyle(.secondary)
+            Button("恢复默认绑定") { m.resetBindings() }
+            Text("F12 打开此设置面板。Fn+Esc 为保留按键。F7 没有已知事件；F11 需要 macOS 按键捕获才能验证重映射。可选的 EC 查询桥接可启用其他由固件路由的按键，避免重复的 PS/2 操作。").font(.caption).foregroundStyle(.secondary)
+            Text("F10 目前打开相机隐私设置，并非经过验证的全局硬件相机开关。锁屏／截图快捷键需要辅助功能权限。应用操作需要应用在后台运行。").font(.caption).foregroundStyle(.secondary)
             if !m.bindingsError.isEmpty { Text(m.bindingsError).font(.caption) }
         }
     }
@@ -1020,13 +1045,13 @@ struct RogControls: View {
     }
     var lowPowerControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Use a fan preset when macOS enters Low Power Mode", isOn: Binding(
+            Toggle("macOS 进入低电量模式时使用风扇预设", isOn: Binding(
                 get: { m.lowPowerRule.enabled }, set: { m.setLowPowerRule(enabled: $0) }))
-            Picker("Low Power Mode preset", selection: Binding(
+            Picker("低电量模式预设", selection: Binding(
                 get: { m.lowPowerRule.mode }, set: { m.setLowPowerRule(mode: $0) })) {
                 ForEach(ControlPolicy.visibleModes) { Text($0.title).tag($0) }
             }
-            Text("macOS Low Power Mode: \(m.macOSLowPowerActive ? "On" : "Off"). Automatic detection requires the app to remain running in the background. Disabling the rule, leaving Low Power Mode or quitting normally restores ordinary desired; Performance still falls back on battery.")
+            Text("macOS 低电量模式：\(m.macOSLowPowerActive ? "开启" : "关闭")。自动检测需要应用保持后台运行。禁用规则、退出低电量模式或正常退出应用将恢复原有期望模式；使用电池时性能模式仍会回退。")
                 .font(.caption).foregroundStyle(.secondary)
             if !m.lowPowerError.isEmpty { Text(m.lowPowerError).font(.caption).foregroundStyle(.red) }
         }.disabled(!m.st.supports(.profile))
@@ -1041,9 +1066,9 @@ struct RogControls: View {
     var gpuLine: String {
         var s = "GPU: "
         let mux = m.st.gpuMux
-        s += mux == ~0 ? "MUX unknown" : (mux & 1 == 0 ? "dGPU only (MUX)" : "Hybrid")
-        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", dGPU disabled" }
-        if m.st.baseTgp > 0 { s += ", base TGP \(m.st.baseTgp) W" }
+        s += mux == ~0 ? "MUX 状态未知" : (mux & 1 == 0 ? "仅独立显卡（MUX）" : "混合模式")
+        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", 独立显卡已禁用" }
+        if m.st.baseTgp > 0 { s += ", 基础 TGP \(m.st.baseTgp) W" }
         return s
     }
 }
@@ -1071,8 +1096,8 @@ struct ModeRow: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Color.accentColor : Color.clear))
                 }
                 .buttonStyle(.plain).disabled(unavailable).opacity(unavailable ? 0.4 : 1)
-                .accessibilityLabel(mode.title + (selected ? ", selected" : ""))
-                .help(!state.supports(.profile) ? "ABI 5 profile capability required" : mode == .performance ? "Retains Performance intent on battery; AsusSMC temporarily uses Balanced until AC returns" : mode.title)
+                .accessibilityLabel(mode.title + (selected ? "，已选择" : ""))
+                .help(!state.supports(.profile) ? "需要 ABI 5 模式功能" : mode == .performance ? "电池供电时保留性能模式请求；AsusSMC 暂时使用平衡模式，直到恢复交流电供电" : mode.title)
             }
         }
         .id("mode-\(active?.rawValue ?? "none")-\(state.ac)-\(state.supports(.profile))")
@@ -1090,7 +1115,7 @@ struct ChoiceButton: View {
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
                 .background(selected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.accentColor : Color.clear))
-        }.buttonStyle(.plain).accessibilityLabel(title + (selected ? ", active" : ""))
+        }.buttonStyle(.plain).accessibilityLabel(title + (selected ? "，已启用" : ""))
     }
 }
 
@@ -1101,16 +1126,16 @@ struct ChargeLimitControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Stepper("Charge limit: \(draft)%", value: $draft, in: ControlPolicy.chargeRange, step: 1)
-                Button("Apply") { m.setCharge(draft) }
+                Stepper("充电上限：\(draft)%", value: $draft, in: ControlPolicy.chargeRange, step: 1)
+                Button("应用") { m.setCharge(draft) }
             }
             HStack(spacing: 6) {
                 ForEach([50, 60, 80, 100], id: \.self) { value in
-                    ChoiceButton(title: "\(value)%", selected: draft == value) { draft = value }
+                    ChoiceButton(title: "\(value)%"，已选择: draft == value) { draft = value }
                 }
                 Spacer(minLength: 0)
             }
-            Text(m.st.charge.map { "Reported limit: \($0)% · Apply to save draft" } ?? "Reported limit: unknown · Apply to save draft")
+            Text(m.st.charge.map { "报告的上限：\($0)% · 点击应用以保存更改" } ?? "报告的上限：未知 · 点击应用以保存更改")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .disabled(!m.st.supports(.charge))
@@ -1132,7 +1157,7 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("ROG Control").font(.system(size: 13, weight: .semibold))
+                Text("MyASUS").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Label(m.st.powerLabel,
                       systemImage: m.st.powerKnown && m.st.ac ? "powerplug" : "battery.75")
@@ -1140,7 +1165,7 @@ struct ContentView: View {
             }
             HStack(spacing: 6) {
                 quickStat(m.tctl.map { String(format: "%.0f°C", $0) } ?? "–", "CPU")
-                quickStat(m.watts.map { String(format: "%.1f W", $0) } ?? "–", "Power")
+                quickStat(m.watts.map { String(format: "%.1f W", $0) } ?? "–", "功率")
                 quickStat(m.st.reports(.cpuFan) ? "\(m.st.cpuFan)" : "–", "CPU RPM")
                 quickStat(m.st.reports(.gpuFan) ? "\(m.st.gpuFan)" : "–", "GPU RPM")
             }
@@ -1152,9 +1177,9 @@ struct ContentView: View {
             inlineError(m.chargeError)
             if m.st.batFull > 0 {
                 HStack {
-                    Text("Battery \(min(100, max(0, m.st.batNow * 100 / m.st.batFull)))%")
+                    Text("电池 \(min(100, max(0, m.st.batNow * 100 / m.st.batFull)))%")
                     Spacer()
-                    Text(m.st.batState & 2 != 0 ? "Charging" : !m.st.powerKnown ? "Power unknown" : m.st.ac ? "On AC" : "Discharging")
+                    Text(m.st.batState & 2 != 0 ? "充电中" : !m.st.powerKnown ? "电源状态未知" : m.st.ac ? "交流电供电" : "放电中")
                 }.font(.caption).foregroundStyle(.secondary)
             }
             Divider()
@@ -1165,26 +1190,26 @@ struct ContentView: View {
             }
             Divider()
             HStack {
-                Menu("Settings") {
-                    Toggle("Open at Login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
-                    Toggle("Performance notifications", isOn: Binding(get: { m.notificationsEnabled }, set: { m.setNotifications($0) }))
+                Menu("设置") {
+                    Toggle("登录时打开", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
+                    Toggle("性能模式通知", isOn: Binding(get: { m.notificationsEnabled }, set: { m.setNotifications($0) }))
                     Text(m.notificationStatus)
-                    Button("Refresh notification permission") { m.updateNotificationPermission() }
-                    Menu("Low Power Mode preset") {
-                        Toggle("Enable automatic preset", isOn: Binding(get: { m.lowPowerRule.enabled }, set: { m.setLowPowerRule(enabled: $0) }))
+                    Button("刷新通知权限") { m.updateNotificationPermission() }
+                    Menu("低电量模式预设") {
+                        Toggle("启用自动预设", isOn: Binding(get: { m.lowPowerRule.enabled }, set: { m.setLowPowerRule(enabled: $0) }))
                         ForEach(ControlPolicy.visibleModes) { mode in
-                            Button((m.lowPowerRule.mode == mode ? "Selected: " : "") + mode.title) { m.setLowPowerRule(mode: mode) }
+                            Button((m.lowPowerRule.mode == mode ? "已选择：" : "") + mode.title) { m.setLowPowerRule(mode: mode) }
                         }
-                        Text("Automatic detection requires the app running in background.")
+                        Text("自动检测需要应用在后台运行。")
                         Text(m.lowPowerError)
                     }.disabled(!m.st.supports(.profile))
                     Text(m.batteryLine)
                     Text(controls.gpuLine)
-                    Button("Created by thanhnndev (GitHub)") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
-                    Button("Quit ROG Control") { NSApp.terminate(nil) }
+                    Button("由 thanhnndev 创建（GitHub）") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
+                    Button("退出 MyASUS") { NSApp.terminate(nil) }
                 }.menuStyle(.borderlessButton).fixedSize().font(.caption)
                 Spacer()
-                Button("Open app", action: openWindow).buttonStyle(.borderless).font(.caption)
+                Button("打开应用", action: openWindow).buttonStyle(.borderless).font(.caption)
             }
         }.padding(14).frame(width: 350)
     }
@@ -1211,13 +1236,13 @@ struct RogWindowView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("ROG Control").font(.system(size: 21, weight: .semibold))
+                    Text("MyASUS").font(.system(size: 21, weight: .semibold))
                     Text(m.st.machineName).font(.system(size: 10, weight: .medium)).tracking(1.5).foregroundStyle(.secondary)
                 }.padding(.horizontal, 12).padding(.top, 20)
                 VStack(spacing: 4) {
                     ForEach(RogPage.allCases) { destination in
                         Button { m.selectedPage = destination } label: {
-                            Label(destination.rawValue, systemImage: destination.symbol)
+                            Label(destination.title, systemImage: destination.symbol)
                                 .font(.system(size: 13, weight: page == destination ? .semibold : .regular))
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                                 .foregroundStyle(page == destination ? Color.accentColor : Color.primary)
@@ -1233,7 +1258,7 @@ struct RogWindowView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(page.rawValue).font(.system(size: 24, weight: .semibold))
+                        Text(page.title).font(.system(size: 24, weight: .semibold))
                         Text("\(m.st.powerLabel) · \(m.st.profileStatus)").font(.callout).foregroundStyle(.secondary)
                     }
                     RogControls(m: m, page: page)
@@ -1292,7 +1317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            w.title = "ROG Control"
+            w.title = "MyASUS"
             w.isReleasedWhenClosed = false
             w.minSize = NSSize(width: 800, height: 640)
             w.contentViewController = NSHostingController(rootView: RogWindowView(m: model))
@@ -1308,7 +1333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc func refreshNow() { model.refresh() }
     @objc func showAbout() {
-        let credits = NSMutableAttributedString(string: "Created by thanhnndev\ngithub.com/thanhnndev\n\nInspired by asusctl and the asus-linux community.",
+        let credits = NSMutableAttributedString(string: "由 thanhnndev 创建\ngithub.com/thanhnndev\n\n灵感来自 asusctl 和 asus-linux 社区。",
                                                 attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
         credits.addAttribute(.link, value: URL(string: "https://github.com/thanhnndev")!, range: (credits.string as NSString).range(of: "github.com/thanhnndev"))
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
@@ -1318,18 +1343,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let menu = NSMenu()
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        let about = appMenu.addItem(withTitle: "About ROG Control", action: #selector(showAbout), keyEquivalent: "")
+        let about = appMenu.addItem(withTitle: "关于 MyASUS", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide ROG Control", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "隐藏 MyASUS", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit ROG Control", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "退出 MyASUS", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let windowItem = NSMenuItem(); menu.addItem(windowItem)
-        let windowMenu = NSMenu(title: "Window"); windowItem.submenu = windowMenu
-        let open = windowMenu.addItem(withTitle: "Open ROG Control", action: #selector(showWindow), keyEquivalent: "0"); open.target = self
-        let refresh = windowMenu.addItem(withTitle: "Refresh", action: #selector(refreshNow), keyEquivalent: "r"); refresh.target = self
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowMenu = NSMenu(title: "窗口"); windowItem.submenu = windowMenu
+        let open = windowMenu.addItem(withTitle: "打开 MyASUS", action: #selector(showWindow), keyEquivalent: "0"); open.target = self
+        let refresh = windowMenu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r"); refresh.target = self
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         NSApp.mainMenu = menu
         NSApp.windowsMenu = windowMenu
     }
@@ -1338,10 +1363,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let b = item.button else { return }
         let ready = model.driverStatus == .ready
         let symbol = ready ? (model.activeMode ?? .balanced).symbol : model.driverStatusSymbol
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: ready ? "ROG: \(model.modeLabel)" : "ROG: AsusSMC unavailable")
+        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: ready ? "MyASUS:\(model.modeLabel)" : "MyASUS：AsusSMC 不可用")
         img?.isTemplate = true
         b.image = img
-        var tip = ready ? "ROG: \(model.modeLabel)" : "ROG: AsusSMC unavailable"
+        var tip = ready ? "MyASUS:\(model.modeLabel)" : "MyASUS：AsusSMC 不可用"
         if ready {
             if let t = model.tctl { tip += String(format: " · CPU %.0f°C", t) }
             if let w = model.watts { tip += String(format: " · %.1f W", w) }
@@ -1354,7 +1379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
 // Refuse before opening a driver connection, changing profiles or starting load threads.
 if CommandLine.arguments.dropFirst().contains("--bench") {
-    print("RogControl --bench is disabled for ASUS controls; no load test was started.")
+    print("ASUS 控制功能已禁用 RogControl --bench；未启动负载测试。")
     exit(1)
 }
 

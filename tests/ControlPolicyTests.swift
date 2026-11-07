@@ -20,7 +20,7 @@ defaults.removePersistentDomain(forName: suite)
 let ac = fixture()
 let battery = fixture(ac: false)
 expect(ac.present && ac.writable, "Only ABI 5 permits capability-gated controls")
-expect(ac.machineName == "ASUS notebook", "The app must not expose a fixed notebook model")
+expect(ac.machineName == "ASUS 笔记本电脑", "The app must not expose a fixed notebook model")
 expect(ac.lastKey == 0x42 && ac.eventSequence == 7, "The old prefix indexes must not move")
 expect(ac.desiredProfile == 0 && ac.powerTransitionSequence == 10 && ac.performanceDropSequence == 20 && ac.lastProfileError == 0,
        "ABI 5 tail must decode words 32 through 35")
@@ -32,6 +32,10 @@ expect(ControlPolicy.restore(state: battery, defaults: defaults, reason: .wake).
 expect(DesiredSettings.load(defaults: defaults) == nil && defaults.object(forKey: "desired.mode") == nil,
        "Unknown desired must not be adopted from actual readback")
 expect(ControlPolicy.visibleModes == [.balanced, .performance, .silent], "Only the three normalized presets are visible")
+expect(Mode.balanced.title == "平衡" && Mode.performance.title == "性能" && Mode.silent.title == "静音",
+       "Mode titles must use the Chinese UI terminology")
+expect(Mode.balanced.rawValue == "balanced" && Mode.performance.rawValue == "performance" && Mode.silent.rawValue == "silent",
+       "Localized titles must not change persisted mode raw values")
 expect(Mode.balanced.firmwareProfile == 0 && Mode.performance.firmwareProfile == 1 && Mode.silent.firmwareProfile == 2,
        "Frontend must use normalized, not firmware-specific values")
 for state in [ac, battery] {
@@ -65,22 +69,22 @@ for state in [ac, battery] {
 }
 var deferred = battery
 deferred.desiredProfile = 1; deferred.profile = 0; deferred.profileDeferred = true
-expect(deferred.selectedMode == .performance && deferred.actualLabel == "Balanced", "Selection and actual must remain independent")
-expect(deferred.profileStatus.contains("Temporarily running Balanced") && deferred.profileStatus.contains("automatically on AC"),
+expect(deferred.selectedMode == .performance && deferred.actualLabel == "平衡", "Selection and actual must remain independent")
+expect(deferred.profileStatus.contains("暂时运行平衡模式") && deferred.profileStatus.contains("接通交流电后自动恢复"),
        "Battery Performance must explain temporary Balanced and AC recovery")
 expect(DesiredSettings.load(defaults: defaults) == .performance, "Fallback must never replace saved desired")
 var online = deferred
 online.ac = true; online.profileDeferred = false; online.profile = 1
-expect(online.selectedMode == .performance && online.actualLabel == "Performance", "AC restores actual without changing desired")
+expect(online.selectedMode == .performance && online.actualLabel == "性能", "AC restores actual without changing desired")
 var unknownPower = deferred
 unknownPower.powerKnown = false
-expect(ControlPolicy.canChoose(.performance, state: unknownPower) && unknownPower.powerLabel == "Power unknown",
+expect(ControlPolicy.canChoose(.performance, state: unknownPower) && unknownPower.powerLabel == "电源状态未知",
        "Unknown power still allows intent but must not be described as known battery")
 deferred.lastProfileError = 0xe00002bc
-expect(deferred.profileStatus.contains("failed") && !deferred.profileStatus.contains("Temporarily running Balanced"),
+expect(deferred.profileStatus.contains("失败") && !deferred.profileStatus.contains("暂时运行平衡模式"),
        "An error must not claim a successful fallback, even with stale actual Balanced")
 deferred.lastProfileError = 0; deferred.profile = nil
-expect(deferred.profileStatus.contains("not confirmed"), "Unknown actual must not claim Balanced success")
+expect(deferred.profileStatus.contains("未确认"), "Unknown actual must not claim Balanced success")
 
 // Only migrate explicit legacy values, with their old meanings. Never migrate Manual.
 defaults.removePersistentDomain(forName: suite)
@@ -119,7 +123,7 @@ for req in [request(.profile, 0), request(.charge, 80), request(.fnLock, 1), req
     expect(!ControlPolicy.allows(req, state: unsupported), "Capability checks must also reject direct writes")
 }
 expect(ControlPolicy.visibleModes.allSatisfy { !ControlPolicy.canChoose($0, state: unsupported) }, "Missing profile cap disables choices")
-expect(unsupported.machineName == "ASUS notebook", "Missing profile cap keeps generic identity")
+expect(unsupported.machineName == "ASUS 笔记本电脑", "Missing profile cap keeps generic identity")
 expect(ControlPolicy.restore(state: fixture(caps: [.charge]), defaults: defaults, lowPowerActive: true) == [request(.charge, 80)], "Charge-only cap never writes profile or rule")
 expect(ControlPolicy.restore(state: fixture(caps: [.fnLock]), defaults: defaults) == [request(.fnLock, 1)], "FnLock-only cap restores only FnLock")
 expect(ControlPolicy.restore(state: fixture(caps: [.profile]), defaults: defaults) == [request(.profile, 2)], "Profile-only cap restores only desired")
@@ -209,16 +213,16 @@ dropState.powerTransitionSequence &+= 1
 expect(drops.observe(state: dropState) == nil, "Power transitions alone never notify")
 dropState.performanceDropSequence &+= 1
 let notice = drops.observe(state: dropState)
-expect(notice?.body.contains("Temporarily running Balanced") == true && notice?.body.contains("automatically") == true, "New drop reports successful temporary fallback")
+expect(notice?.body.contains("暂时运行平衡模式") == true && notice?.body.contains("接通交流电后自动恢复") == true, "New drop reports successful temporary fallback")
 expect(drops.observe(state: dropState) == nil, "A delivered counter must not deliver twice")
 dropState.ac = true; dropState.profile = 1; dropState.profileDeferred = false; dropState.performanceDropSequence &+= 2
-expect(drops.observe(state: dropState)?.body.contains("already been restored on AC") == true, "Counter delta must catch quick cycles even if AC snapshot never changed")
+expect(drops.observe(state: dropState)?.body.contains("已在接通交流电后恢复") == true, "Counter delta must catch quick cycles even if AC snapshot never changed")
 dropState.ac = false; dropState.profile = 0; dropState.lastProfileError = 0xe00002bc; dropState.performanceDropSequence &+= 1
 let failedNotice = drops.observe(state: dropState)
-expect(failedNotice?.body.contains("not confirmed") == true && failedNotice?.body.contains("Temporarily running Balanced") == false,
+expect(failedNotice?.body.contains("未确认") == true && failedNotice?.body.contains("暂时运行平衡模式") == false,
        "Failed reconciliation notice must distinguish request from actual success")
 dropState.lastProfileError = 0; dropState.profile = nil; dropState.performanceDropSequence &+= 1
-expect(drops.observe(state: dropState)?.body.contains("actual mode is not confirmed") == true, "Unknown actual must not imply success")
+expect(drops.observe(state: dropState)?.body.contains("实际模式尚未确认") == true, "Unknown actual must not imply success")
 expect(drops.observe(state: AsusState()) == nil, "Transient read failure never notifies or forgets baseline")
 dropState.performanceDropSequence &+= 1
 expect(drops.observe(state: dropState) != nil, "Counter changes across read failure must still be observed")
@@ -259,8 +263,8 @@ expect(ordered == [request(.lowPowerConfig, 0x103), request(.profile, 2)], "Star
 var overrideState = battery
 overrideState.desiredProfile = 2; overrideState.lowPowerConfig = 0x103; overrideState.lowPowerOverrideActive = true
 overrideState.profile = 0; overrideState.profileDeferred = true
-expect(overrideState.effectiveProfile == 1 && overrideState.selectedMode == .silent && overrideState.actualLabel == "Balanced", "Performance override on battery preserves ordinary Silent while actual is Balanced")
-expect(overrideState.profileStatus.contains("Low Power Mode override: Performance") && overrideState.profileStatus.contains("Temporarily running Balanced"), "UI must explain override and fallback")
+expect(overrideState.effectiveProfile == 1 && overrideState.selectedMode == .silent && overrideState.actualLabel == "平衡", "Performance override on battery preserves ordinary Silent while actual is Balanced")
+expect(overrideState.profileStatus.contains("低电量模式预设已启用") && overrideState.profileStatus.contains("性能") && overrideState.profileStatus.contains("暂时运行平衡模式"), "UI must explain override and fallback")
 overrideState.ac = true; overrideState.profile = 1; overrideState.profileDeferred = false
 expect(overrideState.effectiveProfile == 1 && overrideState.selectedMode == .silent, "AC can restore override Performance without changing ordinary desired")
 overrideState.lowPowerConfig = UInt32(onRule.packed(active: false)); overrideState.lowPowerOverrideActive = false
@@ -271,7 +275,7 @@ var overrideDrops = PerformanceDropPolicy()
 overrideState.lowPowerConfig = 0x103; overrideState.lowPowerOverrideActive = true; overrideState.ac = false; overrideState.profile = 0
 expect(overrideDrops.observe(state: overrideState) == nil, "First override sample must not notify")
 overrideState.performanceDropSequence &+= 1
-expect(overrideDrops.observe(state: overrideState)?.body.contains("Low Power Mode preset is active") == true, "Notifications must identify effective override rather than overwrite ordinary desired")
+expect(overrideDrops.observe(state: overrideState)?.body.contains("低电量模式预设已启用") == true, "Notifications must identify effective override rather than overwrite ordinary desired")
 expect(ControlPolicy.restore(state: battery, defaults: defaults, reason: .powerChange, lowPowerActive: true).isEmpty,
        "Power-change path must not replay lowpower config or desired")
 defaults.removePersistentDomain(forName: suite)

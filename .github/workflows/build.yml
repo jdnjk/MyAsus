@@ -30,8 +30,8 @@ jobs:
         with:
           name: MyAsus-Control-${{ github.sha }}
           path: |
-            build/RogControl.app/
-            build/RogControl-*.dmg
+            build/MyASUS.app/
+            build/MyASUS-*.dmg
             build/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

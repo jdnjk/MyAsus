@@ -17,8 +17,8 @@ if [[ "$(uname -s)" != Darwin ]] || ! command -v swiftc >/dev/null 2>&1; then
     exit 77
 fi
 
-APP="$ROOT/build/RogControl.app"
-DMG="$ROOT/build/RogControl-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist).dmg"
+APP="$ROOT/build/MyASUS.app"
+DMG="$ROOT/build/MyASUS-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist).dmg"
 WORK="$(mktemp -d)"
 STAGING=""
 trap 'rm -rf -- "$WORK" "${STAGING:-}"' EXIT
@@ -39,7 +39,7 @@ codesign --force --sign - "$APP" >/dev/null
 plutil -lint "$APP/Contents/Info.plist"
 STAGING="$(mktemp -d)"
 ln -s /Applications "$STAGING/Applications"
-cp -R "$APP" "$STAGING/RogControl.app"
-hdiutil create -volname RogControl -srcfolder "$STAGING" -format UDZO -ov -o "$DMG" >/dev/null
+cp -R "$APP" "$STAGING/MyASUS.app"
+hdiutil create -volname MyASUS -srcfolder "$STAGING" -format UDZO -ov -o "$DMG" >/dev/null
 shasum -a 256 "$DMG" > "$ROOT/build/SHA256SUMS.txt"
 printf 'Built %s and %s. No installation or hardware writes were performed.\n' "$APP" "$DMG"

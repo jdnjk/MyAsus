@@ -25,8 +25,8 @@ import IOKit
 enum NativeSMCTelemetry {
     struct Sample {
         var cpu: Double?, gpu: Double?
-        var cpuSource = "Unavailable — needs a working CPU SMC sensor (e.g. SMCProcessor)"
-        var gpuSource = "Unavailable — no validated GPU SMC temperature key"
+        var cpuSource = "不可用——需要可工作的 CPU SMC 传感器（例如 SMCProcessor）"
+        var gpuSource = "不可用——没有经过验证的 GPU SMC 温度键"
     }
     private static var connection: io_connect_t = 0
     private static func open() -> Bool {
@@ -75,7 +75,7 @@ enum NativeSMCTelemetry {
             if let value = readTemperature(key) { result.cpu = value; result.cpuSource = "SMC \(key)"; break }
         }
         for key in ["TG0D", "TG0P", "TG1D", "TG1P"] {
-            if let value = readTemperature(key) { result.gpu = value; result.gpuSource = "SMC \(key) — GPU identity depends on the sensor provider"; break }
+            if let value = readTemperature(key) { result.gpu = value; result.gpuSource = "SMC \(key) — GPU 的具体身份取决于传感器提供程序"; break }
         }
         return result
     }

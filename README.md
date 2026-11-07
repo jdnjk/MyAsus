@@ -1,4 +1,4 @@
-# MyAsus Control
+# MyASUS
 
 A macOS menu-bar companion for compatible AsusSMC drivers. The UI uses a generic **ASUS notebook** identity and does not include a fixed laptop model identifier.
 
@@ -13,7 +13,7 @@ bash build.sh test
 bash build.sh
 ```
 
-Outputs are placed in `build/`: `RogControl.app`, a drag-install DMG, and `SHA256SUMS.txt`. The app and DMG are ad-hoc signed and are not notarized.
+Outputs are placed in `build/`: `MyASUS.app`, a drag-install DMG, and `SHA256SUMS.txt`. The app is ad-hoc signed and neither the app nor the DMG is notarized. The bundle identifier and preferences location remain unchanged for existing users. If replacing an older installation, quit the old app first and update the login item from the new app.
 
 GitHub Actions runs the hardware-free policy tests and builds the app and DMG on pushes, pull requests, and manual runs. Download them from the workflow run's **Artifacts** section. This workflow does not create a GitHub Release or install the app.
 
