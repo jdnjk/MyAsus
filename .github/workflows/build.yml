@@ -1,0 +1,38 @@
+name: Build MyAsus Control
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Run hardware-free policy tests
+        run: bash build.sh test
+      - name: Build app and drag-install DMG
+        run: bash build.sh
+      - name: Upload app and DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MyAsus-Control-${{ github.sha }}
+          path: |
+            build/RogControl.app/
+            build/RogControl-*.dmg
+            build/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
