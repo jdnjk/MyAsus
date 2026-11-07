@@ -1006,8 +1006,8 @@ struct RogControls: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text("FnLock").font(.system(size: 12))
-                ChoiceButton(title: "未锁定 · 快捷功能"，已选择: m.st.fnLockLastRequest == 0) { m.setFnLock(0) }
-                ChoiceButton(title: "已锁定 · F1–F12"，已选择: m.st.fnLockLastRequest == 1) { m.setFnLock(1) }
+                ChoiceButton(title: "未锁定 · 快捷功能", selected: m.st.fnLockLastRequest == 0) { m.setFnLock(0) }
+                ChoiceButton(title: "已锁定 · F1–F12", selected: m.st.fnLockLastRequest == 1) { m.setFnLock(1) }
                 Spacer()
             }.disabled(!m.st.supports(.fnLock))
             Text("上次请求：\(m.fnLockLabel) — 非硬件回读。").font(.caption).foregroundStyle(.secondary)
@@ -1131,7 +1131,7 @@ struct ChargeLimitControls: View {
             }
             HStack(spacing: 6) {
                 ForEach([50, 60, 80, 100], id: \.self) { value in
-                    ChoiceButton(title: "\(value)%"，已选择: draft == value) { draft = value }
+                    ChoiceButton(title: "\(value)%", selected: draft == value) { draft = value }
                 }
                 Spacer(minLength: 0)
             }
