@@ -732,7 +732,7 @@ final class RogModel: ObservableObject {
             let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             guard AXIsProcessTrustedWithOptions(options) else {
                 message = "This key action needs Accessibility permission for ROG Control; no keystroke was sent."
-                NSBeep(); return
+                NSSound.beep(); return
             }
             let code: CGKeyCode = action == .lockScreen ? 0x0c : 0x17 // Control+Command+Q / Shift+Command+5
             let flags: CGEventFlags = action == .lockScreen ? [.maskControl, .maskCommand] : [.maskShift, .maskCommand]
