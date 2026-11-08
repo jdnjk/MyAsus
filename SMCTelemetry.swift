@@ -17,7 +17,7 @@ enum SMCScalar {
     }
 }
 
-#if !ROG_LOGIC_TESTS
+#if !MYASUS_LOGIC_TESTS
 import IOKit
 
 // Read-only AppleSMC user client. Commands 9 (metadata) and 5 (read bytes) only; never command 6 (write).

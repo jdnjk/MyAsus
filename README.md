@@ -13,7 +13,9 @@ bash build.sh test
 bash build.sh
 ```
 
-Outputs are placed in `build/`: `MyASUS.app`, a drag-install DMG, and `SHA256SUMS.txt`. The app is ad-hoc signed and neither the app nor the DMG is notarized. The bundle identifier and preferences location remain unchanged for existing users. If replacing an older installation, quit the old app first and update the login item from the new app.
+Outputs are placed in `build/`: `MyASUS.app`, a drag-install DMG, and `SHA256SUMS.txt`. The app is ad-hoc signed and neither the app nor the DMG is notarized. Settings are stored in `~/Library/Application Support/ASUSControl/config.json` and survive bundle-identifier changes. If replacing an older installation, quit the old app first and update the login item from the new app.
+
+Alternatively, open `MyASUS.xcodeproj` in Xcode, select the **MyASUS** scheme, and press Run (⌘R). The target uses the same `Info.plist` and is signed to run locally, so no Apple developer team is required.
 
 GitHub Actions runs the hardware-free policy tests and builds the app and DMG on pushes, pull requests, and manual runs. Download them from the workflow run's **Artifacts** section. This workflow does not create a GitHub Release or install the app.
 

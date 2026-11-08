@@ -14,7 +14,7 @@ func fixture(ac: Bool = true, caps: AsusCaps = [.profile, .charge, .fnLock, .hot
 }
 func request(_ what: ControlWhat, _ value: Int) -> ControlRequest { ControlRequest(what: what, value: value) }
 
-let suite = "RogControl.HostTests.\(UUID().uuidString)"
+let suite = "MyASUS.HostTests.\(UUID().uuidString)"
 let defaults = UserDefaults(suiteName: suite)!
 defaults.removePersistentDomain(forName: suite)
 let ac = fixture()
@@ -279,4 +279,4 @@ expect(overrideDrops.observe(state: overrideState)?.body.contains("低电量模�
 expect(ControlPolicy.restore(state: battery, defaults: defaults, reason: .powerChange, lowPowerActive: true).isEmpty,
        "Power-change path must not replay lowpower config or desired")
 defaults.removePersistentDomain(forName: suite)
-print("RogControl Foundation behavior tests passed")
+print("MyASUS Foundation behavior tests passed")

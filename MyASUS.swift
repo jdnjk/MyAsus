@@ -10,9 +10,9 @@
 // debug.amdcppc.sensors is read only when the driver advertises referenceSensors.
 //
 // --bench is intentionally refused: this app does not run hardware load tests.
-// Build: scripts/build-rogcontrol.sh
+// Build: bash build.sh, or open MyASUS.xcodeproj in Xcode.
 import Foundation
-#if !ROG_LOGIC_TESTS
+#if !MYASUS_LOGIC_TESTS
 import AppKit
 import SwiftUI
 import Charts
@@ -301,7 +301,7 @@ struct PerformanceDropPolicy {
     }
 }
 
-#if !ROG_LOGIC_TESTS
+#if !MYASUS_LOGIC_TESTS
 @MainActor
 enum Asus {
     enum Sel: UInt32 { case state = 0, set = 1, keyActions = 2 }
@@ -361,13 +361,19 @@ enum Asus {
         return (kr, Array(out.prefix(outSize)))
     }
 
+    // Little-endian decode without assuming the UInt8 buffer has UInt32 alignment.
+    private static func littleEndianWord(_ bytes: [UInt8], at index: Int) -> UInt32 {
+        var value: UInt32 = 0
+        for offset in 0..<4 {
+            value |= UInt32(bytes[index + offset]) << (8 * offset)
+        }
+        return value
+    }
+
     static func state() -> AsusState {
         let (kr, bytes) = call(.state, outCount: 36 * 4)
         guard kr == KERN_SUCCESS, bytes.count % 4 == 0 else { return AsusState() }
-        // Decode without assuming the UInt8 buffer has UInt32 alignment.
-        let words: [UInt32] = stride(from: 0, to: bytes.count, by: 4).map { i in
-            UInt32(bytes[i]) | UInt32(bytes[i + 1]) << 8 | UInt32(bytes[i + 2]) << 16 | UInt32(bytes[i + 3]) << 24
-        }
+        let words: [UInt32] = stride(from: 0, to: bytes.count, by: 4).map { littleEndianWord(bytes, at: $0) }
         return AsusState.decode(words)
     }
 
@@ -385,9 +391,7 @@ enum Asus {
     static func keyActions(after: UInt32) -> [UInt32]? {
         let (kr, bytes) = call(.keyActions, scalars: [UInt64(after)], outCount: (2 + 64 * 4) * 4)
         guard kr == KERN_SUCCESS, bytes.count % 4 == 0 else { return nil }
-        return stride(from: 0, to: bytes.count, by: 4).map { i in
-            UInt32(bytes[i]) | UInt32(bytes[i + 1]) << 8 | UInt32(bytes[i + 2]) << 16 | UInt32(bytes[i + 3]) << 24
-        }
+        return stride(from: 0, to: bytes.count, by: 4).map { littleEndianWord(bytes, at: $0) }
     }
 }
 
@@ -428,10 +432,15 @@ enum Sensors {
 
 // ---- login item (a user LaunchAgent; no signing needed) ------------------------------------------------------------------
 enum LoginItem {
-    static let label = "com.jdnjk.MyAsusControl"
+    static let label = "io.jdnjk.MyAsus"
+    private static let legacyLabel = "com.jdnjk.MyAsusControl"
     static var plist: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist") }
-    static var enabled: Bool { FileManager.default.fileExists(atPath: plist.path) }
+    private static var legacyPlist: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(legacyLabel).plist") }
+    static var enabled: Bool {
+        FileManager.default.fileExists(atPath: plist.path) || FileManager.default.fileExists(atPath: legacyPlist.path)
+    }
     static func set(_ on: Bool) {
+        try? FileManager.default.removeItem(at: legacyPlist)
         if !on { try? FileManager.default.removeItem(at: plist); return }
         let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
         let d: [String: Any] = ["Label": label, "ProgramArguments": [exe, "--background"], "RunAtLoad": true, "ProcessType": "Interactive",
@@ -934,7 +943,7 @@ struct RogSection<Content: View>: View {
     }
 }
 
-struct RogControls: View {
+struct MyASUSControls: View {
     @ObservedObject var m: RogModel
     let page: RogPage
     var compact = false
@@ -1146,14 +1155,14 @@ struct ChargeLimitControls: View {
 // Keep the popover FnLock section on its own observation path, like the window controls.
 struct FnLockPopover: View {
     @ObservedObject var m: RogModel
-    var body: some View { RogControls(m: m, page: .overview, compact: true).fnLockControls }
+    var body: some View { MyASUSControls(m: m, page: .overview, compact: true).fnLockControls }
 }
 
 // Primary surface: stable compact rows, immediate controls, optional details.
 struct ContentView: View {
     @ObservedObject var m: RogModel
     let openWindow: () -> Void
-    private var controls: RogControls { RogControls(m: m, page: .overview, compact: true) }
+    private var controls: MyASUSControls { MyASUSControls(m: m, page: .overview, compact: true) }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -1261,7 +1270,7 @@ struct RogWindowView: View {
                         Text(page.title).font(.system(size: 24, weight: .semibold))
                         Text("\(m.st.powerLabel) · \(m.st.profileStatus)").font(.callout).foregroundStyle(.secondary)
                     }
-                    RogControls(m: m, page: page)
+                    MyASUSControls(m: m, page: page)
                 }.padding(32).frame(maxWidth: 900, alignment: .leading).frame(maxWidth: .infinity)
             }.background(Color(nsColor: .underPageBackgroundColor))
         }.frame(minWidth: 800, minHeight: 600)
@@ -1323,7 +1332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             w.contentViewController = NSHostingController(rootView: RogWindowView(m: model))
             w.delegate = self
             w.center()
-            w.setFrameAutosaveName("RogControl.MainWindow")
+            w.setFrameAutosaveName("MyASUS.MainWindow")
             window = w
         }
         NSApp.setActivationPolicy(.regular)
@@ -1377,17 +1386,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 }
 
-// Refuse before opening a driver connection, changing profiles or starting load threads.
-if CommandLine.arguments.dropFirst().contains("--bench") {
-    print("ASUS 控制功能已禁用 RogControl --bench；未启动负载测试。")
-    exit(1)
-}
-
-MainActor.assumeIsolated {                     // top-level code runs on the main thread
-    let app = NSApplication.shared
-    let delegate = AppDelegate()
-    app.delegate = delegate
-    app.setActivationPolicy(.accessory)
-    app.run()
-}
 #endif

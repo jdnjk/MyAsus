@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
-	<key>CFBundleExecutable</key><string>RogControl</string>
-	<key>CFBundleIdentifier</key><string>com.jdnjk.MyAsusControl</string>
+	<key>CFBundleExecutable</key><string>MyASUS</string>
+	<key>CFBundleIdentifier</key><string>io.jdnjk.MyAsus</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key><string>MyASUS</string>
 	<key>CFBundleDisplayName</key><string>MyASUS</string>

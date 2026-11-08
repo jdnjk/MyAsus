@@ -13,7 +13,7 @@ if [[ "$MODE" != build ]]; then
     exit 2
 fi
 if [[ "$(uname -s)" != Darwin ]] || ! command -v swiftc >/dev/null 2>&1; then
-    printf '%s\n' 'SKIP: RogControl needs macOS with the Swift toolchain. No app was built or installed.' >&2
+    printf '%s\n' 'SKIP: MyASUS needs macOS with the Swift toolchain. No app was built or installed.' >&2
     exit 77
 fi
 
@@ -27,13 +27,13 @@ rm -rf -- "$APP"
 rm -f -- "$DMG"
 mkdir -p "$APP/Contents/MacOS"
 cp Info.plist "$APP/Contents/Info.plist"
-/usr/bin/python3 -I - "$WORK/main.swift" <<'PY'
+/usr/bin/python3 -I - "$WORK/AppMain.swift" <<'PY'
 from pathlib import Path
 import sys
-files = ['ControlConfiguration.swift', 'SMCTelemetry.swift', 'RogControl.swift']
+files = ['ControlConfiguration.swift', 'SMCTelemetry.swift', 'MyASUS.swift', 'AppMain.swift']
 Path(sys.argv[1]).write_text('\n'.join(Path(name).read_text() for name in files))
 PY
-swiftc -O -target x86_64-apple-macos13.0 "$WORK/main.swift" -o "$APP/Contents/MacOS/RogControl" \
+swiftc -O -parse-as-library -target x86_64-apple-macos13.0 "$WORK/AppMain.swift" -o "$APP/Contents/MacOS/MyASUS" \
     -framework IOKit -framework SwiftUI -framework UserNotifications -framework ApplicationServices
 codesign --force --sign - "$APP" >/dev/null
 plutil -lint "$APP/Contents/Info.plist"
